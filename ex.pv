@@ -1,0 +1,13 @@
+(* h e l l o . pv : H e l l o World S c r i p t *)
+
+free c:channel.
+
+free Cocks:bitstring [private].
+free RSA:bitstring [private].
+
+query attacker(RSA).
+query attacker(Cocks).
+
+process
+  out(c,RSA);
+  0

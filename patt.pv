@@ -1,0 +1,131 @@
+
+set ignoreTypes = false.
+type key.
+fun senc(bitstring, key): bitstring.
+reduc forall m: bitstring, k: key; sdec(senc(m,k),k) = m.
+type nonce.
+type host.
+free B:host.
+type response.
+type challenge.
+fun PUF(challenge, key):response.
+
+(* Symmetric key encryption *)
+(* Pseudonym Identity *)
+type PID.
+fun h_PID(host,key,nonce):PID.
+free c:channel.
+fun fhost(challenge,response):host [private].
+reduc forall Ci:challenge, Ri:response; getC( fhost(Ci,Ri))=Ci [private].
+reduc forall Ci:challenge, Ri:response; getR( fhost(Ci,Ri))=Ri [private].
+
+
+(* Authentication Queries *)
+event beginAparam(host, host).
+event endAparam(host, host).
+event beginBparam(host, host).
+event endBparam(host, host).
+event beginAfull(host,host,nonce,nonce).
+event endAfull(host,host,nonce,nonce).
+event beginBfull(host,host,nonce,nonce).
+event endBfull(host,host,nonce,nonce).
+
+
+(* Secrecy Queries *)
+free ID_A,ASigma_t,BSigma_t,ASB_t,ASW_t,BSB_t,BSW_t: bitstring [private].
+query attacker(ID_A). (* this query indicates anonymity of IoT device *)
+query attacker(new N1); (*this query indicates secrecy of ephemeral secret N1*)
+attacker(new N2). (*this query indicates secrecy of ephemeral secret N2*)
+noninterf ID_A. (* this query indicates strong anonymity of IoT device *)
+noninterf ASigma_t. (* this query indicates strong secrecy of Sigma *)
+noninterf BSigma_t. (* this query indicates strong secrecy of Sigma *)
+noninterf ASB_t. (* this query indicates strong secrecy of S_B *)
+noninterf ASW_t. (* this query indicates strong secrecy of S_W *)
+noninterf BSB_t. (* this query indicates strong secrecy of S_B *)
+noninterf BSW_t. (* this query indicates strong secrecy of S_W *)
+
+
+(* Data type converters *)
+fun nonce_to_bitstring(nonce):bitstring [data,typeConverter].
+fun bitstring_to_nonce(bitstring):nonce [data,typeConverter].
+fun nonce_to_key(nonce):key [data,typeConverter].
+fun bitstring_to_key(bitstring):key [data,typeConverter].
+
+
+fun host_to_key(host):key [data,typeConverter].
+fun response_to_key(response):key [data,typeConverter].
+(* hash and MAC functions *)
+fun MAC1(host,host,bitstring,nonce,key):bitstring.
+fun MAC2(host,host,bitstring,nonce,nonce,key):bitstring.
+fun MAC3(nonce,nonce,key):bitstring.
+fun MAC4(host,host,bitstring,key):bitstring.
+(* These queries are used to establish the mutual authentication of A and B. These queries also
+indicate the resistance of the protocol against replay and impersonation attacks *)
+(*query x:host, y:host; inj-event(endBparam(x,y)) ==> inj-event(beginBparam(x,y)).
+query x1:host,x2:host,x3:nonce,x4:nonce; inj-event(endBfull(x1,x2,x3,x4))==>injevent(beginBfull(x1,x2,x3,x4)).*)
+query x:host, y:host; inj-event(endAparam(x,y)) ==> inj-event(beginAparam(x,y)).
+query x1:host,x2:host,x3:nonce,x4:nonce; inj-event(endAfull(x1,x2,x3,x4)) ==> inj-event(beginAfull(x1,x2,x3,x4)).
+
+
+(* IoT Device A Process *)
+let processIoT(PUF_KA:key,A:host) =
+let CX = getC(A) in
+let Sk = response_to_key(PUF(CX,PUF_KA)) in
+in(c, (NID:nonce,PID_X:PID,m:bitstring,MACX:bitstring)); (* Message 1 Received *)
+let PID_A = h_PID(A,Sk,NID) in
+if PID_A = PID_X then
+let (b:host,SBX:key,SWX:key,N1X:nonce) = sdec(m,Sk) in
+if MAC1(A,B,m,N1X,Sk) = MACX then
+event beginBparam(A,b);
+new N2:nonce;
+event beginBfull(A,b,N1X,N2);
+let M2 = senc( (A,N1X,N2),Sk) in
+out(c, (M2,MAC2(A,b,M2,N1X,N2,Sk))); (* Message 2 Sent *)
+in(c,(ACK:bitstring));
+if MAC3(N1X,N2,Sk) = ACK then
+new Sigma:bitstring;
+new SD:key;
+let Ms = senc( (Sigma, SD, N1X, N2),Sk) in
+out(c, (Ms, MAC4(A, b, Ms, Sk))); (* Message 4 Sent *)
+if b = B then
+event endAparam(A, b);
+event endAfull(A,b,N1X,N2);
+out(c, senc(ASigma_t,bitstring_to_key(Sigma)));
+out(c, senc(ASB_t,SBX));
+out(c, senc(ASW_t,SWX)).
+
+(* Server Process *)
+let processS(A:host) =
+  in(c,hostX:host);
+  event beginAparam(hostX,B);
+  new N1:nonce;
+  new N_ID:nonce;
+  new SB:key;
+  new SW:key;
+  let R = getR(A) in
+  let Sk = response_to_key(R) in
+  let PID_A = h_PID(A,Sk,N_ID) in
+  let M1 = senc( (B,SB,SW,N1), Sk) in
+  out (c , (N_ID,PID_A,M1, MAC1(hostX,B,M1,N1,Sk))); (* Message 1 Sent *)
+  in(c,(m:bitstring,macX:bitstring)); (* Message 2 Received *)
+  let (hostY:host, =N1, N2:nonce) = sdec(m,Sk) in
+  if MAC2(hostY,B,m,N1,N2,Sk) = macX then
+  event beginAfull(hostX,B,N1,N2);
+  out(c, (MAC3(N1,N2,Sk))); (* Message 3 Sent *)
+  in(c, (ms:bitstring,macX4:bitstring)); (* Message 4 Received *)
+  let (Sigma:bitstring,SD:key,=N1,=N2) = sdec(ms,Sk) in
+  if MAC4(hostY,B,ms,Sk) = macX4 then
+  if hostX = A then
+  event endBparam(hostX,B);
+  event endBfull(hostX,B,N1,N2);
+  out(c, senc(ID_A,host_to_key(hostX)));
+  out(c, senc(BSigma_t,bitstring_to_key(Sigma)));
+  out(c, senc(BSB_t,SB));
+  out(c, senc(BSW_t,SW)).
+
+process
+  new PUF_KA:key; new Ci:challenge; new N_1:nonce;
+  let Ri = PUF(Ci,PUF_KA) in
+  let A = fhost(Ci,PUF(Ci,PUF_KA)) in
+  (* Instantiate an unbounded number of sessions between the host and server *)
+  ( (!processIoT(PUF_KA,A)) | (!processS(A)) )

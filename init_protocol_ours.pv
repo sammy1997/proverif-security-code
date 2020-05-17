@@ -1,0 +1,105 @@
+(* Script to verify security properties of Initialization Protocol for manuscript titled "A Novel Attestation and Authentication Scheme for
+in-transit Autonomous Vehicles" submitted to IEEE *)
+
+set ignoreTypes = false.
+
+type nonce.
+type host.
+free B:host.
+
+
+(* Symmetric key encryption *)
+
+type key.
+fun senc(bitstring, key): bitstring.
+reduc forall m: bitstring, k: key; sdec(senc(m,k),k) = m.
+
+(* PUF *)
+type response.
+type challenge.
+fun PUF(challenge):response [private].
+
+free c:channel.
+
+fun fhost(challenge,response):host.
+fun pkey(key):key.
+
+(* Secret channel and private channel between RSU Grp and cloud which is assumed to be secure *)
+free d:channel [private].
+
+(* Private keys *)
+free chal:challenge [private].
+free private_key_device:key [private].
+free private_key_rsu:key [private].
+
+(* Data type converters *)
+fun nonce_to_bitstring(nonce):bitstring [data,typeConverter].
+fun bitstring_to_nonce(bitstring):nonce [data,typeConverter].
+fun nonce_to_key(nonce):key [data,typeConverter].
+fun response_to_key(response):key [data,typeConverter].
+fun response_to_bitstring(response):bitstring [data,typeConverter].
+fun bitstring_to_response(bitstring):response [data,typeConverter].
+fun challenge_to_bitstring(challenge):bitstring [data,typeConverter].
+fun bitstring_to_challenge(bitstring):challenge [data,typeConverter].
+
+(* Events *)
+event startInit(host, host).
+event endInit(host, host).
+event startCloudInteraction(host, host).
+event endCloudInteraction(host, host).
+
+(* XOR function *)
+fun XOR(bitstring, bitstring): bitstring.
+reduc forall a: bitstring, b: bitstring; resolveXOR(XOR(a,b),b) = a.
+
+(* hash and MAC functions *)
+fun h(nonce,nonce):challenge.
+fun MAC(bitstring,response,key):bitstring.
+
+(* Nonce generation functions *)
+fun generateNonce(bitstring): nonce.
+
+(* Security query *)
+query attacker(chal); attacker(private_key_device); attacker(private_key_rsu).
+
+query x:host, y:host; inj-event(endInit(x,y)) ==> inj-event(startInit(x,y)).
+query x1:host, y1:host; inj-event(endCloudInteraction(x1,y1)) ==> inj-event(startCloudInteraction(x1,y1)).
+
+(* Child processes *)
+
+let processD(A:host) =
+  in(c, hostS:host);
+  new ID_p:bitstring;
+  event startInit(A, hostS);
+  out (c, (hostS, generateNonce(ID_p), ID_p, pkey(private_key_device), MAC(XOR(nonce_to_bitstring(generateNonce(ID_p)), challenge_to_bitstring(chal)), bitstring_to_response(XOR(ID_p, response_to_bitstring(PUF(chal)))), pkey(private_key_device))));
+  in(c, (tt:bitstring, N1:nonce, RSU_id:bitstring, z2:key, macS:bitstring));
+  new success_flag:bitstring;
+  if MAC(XOR(nonce_to_bitstring(N1), challenge_to_bitstring(chal)), bitstring_to_response(XOR(RSU_id, response_to_bitstring(PUF(chal)))), z2) = macS then
+    out(c, success_flag);
+  if XOR(RSU_id, challenge_to_bitstring(chal)) = tt then
+    event endInit(A, hostS);
+  out(c, A).
+
+let processS =
+  in(c, (hostX:host, N0:nonce, ID_p:bitstring, z1:key, macD:bitstring));
+  new RSU_id:bitstring;
+  event startCloudInteraction(hostX, B);
+  out(d, (hostX, ID_p));
+  in(d, (ch:challenge, r:response));
+  let A = fhost(ch, r) in
+
+  if MAC(XOR(nonce_to_bitstring(N0), challenge_to_bitstring(ch)), bitstring_to_response(XOR(ID_p, response_to_bitstring(r))), z1) = macD then
+    out(c, (XOR(RSU_id, challenge_to_bitstring(ch)), generateNonce(RSU_id), RSU_id, pkey(private_key_rsu), MAC(XOR(nonce_to_bitstring(generateNonce(RSU_id)), challenge_to_bitstring(ch)), bitstring_to_response(XOR(RSU_id, response_to_bitstring(r))), pkey(private_key_rsu))));
+  out(c, hostX).
+
+let processC =
+  in(d, (hostX:host, ID_p:bitstring));
+  event endCloudInteraction(hostX, B);
+  out(d, (chal, PUF(chal))).
+
+(* --------------------------------------------------------------------------------------------- *)
+(* Main Process *)
+process
+	let A = fhost(chal, PUF(chal)) in out(c,A);
+	(* Instantiate an unbounded number of sessions between the host and server *)
+	(processD(A) | processS | processC)

@@ -1,0 +1,129 @@
+(* Script to verify security properties of Initialization Protocol for manuscript titled "A Novel Attestation and Authentication Scheme for
+in-transit Autonomous Vehicles" submitted to IEEE *)
+
+set ignoreTypes = false.
+
+type nonce.
+type host.
+free B:host.
+
+
+(* Symmetric key encryption *)
+
+type key.
+fun senc(bitstring, key): bitstring.
+reduc forall m: bitstring, k: key; sdec(senc(m,k),k) = m.
+
+(* PUF *)
+type response.
+type challenge.
+fun PUF(challenge):response [private].
+
+type time.
+free c:channel.
+
+fun fhost(challenge,response):host.
+fun pkey(key):key.
+reduc forall k:key; pdeckey(pkey(k))=k [private].
+
+fun sharedKeyGen(key, key): key.
+reduc forall k: key, p: key;sdecShared(sharedKeyGen(pkey(p), k), p)=k [private].
+
+(* Secret channel and private channel between RSU Grp and cloud which is assumed to be secure *)
+free d:channel [private].
+
+(* Private keys *)
+free chal:challenge [private].
+free private_key_device:key [private].
+free private_key_rsu:key [private].
+
+(* Data type converters *)
+fun nonce_to_bitstring(nonce):bitstring [data,typeConverter].
+fun bitstring_to_nonce(bitstring):nonce [data,typeConverter].
+fun nonce_to_key(nonce):key [data,typeConverter].
+fun response_to_key(response):key [data,typeConverter].
+fun response_to_bitstring(response):bitstring [data,typeConverter].
+fun bitstring_to_response(bitstring):response [data,typeConverter].
+fun challenge_to_bitstring(challenge):bitstring [data,typeConverter].
+fun bitstring_to_challenge(bitstring):challenge [data,typeConverter].
+
+(* Events *)
+event startAttestation(host, host).
+event endAttestation(host, host).
+event startCloudInteraction(host, host).
+event endCloudInteraction(host, host).
+event storeResult(bitstring, bitstring, time, time, bitstring).
+
+(* XOR function *)
+fun XOR(bitstring, bitstring): bitstring.
+reduc forall a: bitstring, b: bitstring; resolveXOR(XOR(a,b),b)=a.
+
+(* Hash and MAC functions *)
+fun h(nonce,nonce):challenge.
+fun hash(bitstring):bitstring.
+fun hashServer(bitstring):bitstring.
+fun readMem(bitstring):bitstring [private].
+fun MAC(bitstring,response):bitstring.
+
+(* Nonce generation functions *)
+fun generateNonce(bitstring): nonce.
+
+query attacker(chal); attacker(private_key_device); attacker(private_key_rsu).
+query t:bitstring; attacker(readMem(t)).
+query x:host, y:host; inj-event(endAttestation(x,y)) ==> inj-event(startAttestation(x,y)).
+
+(* Child processes *)
+let processD(A:host) =
+  new ID_p:bitstring;
+  in(c, hostS:host);
+  event startAttestation(A, hostS);
+  out (c, (hostS, generateNonce(ID_p), ID_p, MAC(XOR(nonce_to_bitstring(generateNonce(ID_p)), challenge_to_bitstring(chal)), bitstring_to_response(XOR(ID_p, response_to_bitstring(PUF(chal)) )) )));
+  in(c, (hostX:host, N1:nonce, macS:bitstring));
+  if MAC(XOR(nonce_to_bitstring(N1), challenge_to_bitstring(chal)), bitstring_to_response(XOR(ID_p, response_to_bitstring(PUF(chal))))) = macS then
+    event endAttestation(A, hostS);
+  out(c, A).
+
+let processDeviceMem =
+  in(c, (hostX:host, ID_p:bitstring, BS:bitstring, ID_RSU:bitstring, B_i:bitstring, N1:nonce, z2:key, macS:bitstring));
+  if MAC(XOR(nonce_to_bitstring(N1), challenge_to_bitstring(chal)), bitstring_to_response(XOR(ID_RSU, response_to_bitstring(PUF(chal)))) ) = macS then
+    let m = hash(readMem(B_i)) in
+    out(c, (hostX, generateNonce(m), pkey(private_key_device), senc(m, sharedKeyGen(z2, private_key_device)), MAC(XOR(nonce_to_bitstring(generateNonce(m)), challenge_to_bitstring(chal)), bitstring_to_response(XOR(ID_p, response_to_bitstring(PUF(chal)) )) ) ));
+  out(c, ID_RSU).
+
+
+let processServerMem(hostX:host, ID_p:bitstring) =
+  new BS:bitstring;
+  new ID_RSU:bitstring;
+  new B_i:bitstring;
+  new T_start:time;
+  out(c, (hostX, ID_p, BS, ID_RSU, B_i, generateNonce(ID_RSU), pkey(private_key_rsu), MAC(XOR(nonce_to_bitstring(generateNonce(ID_RSU)), challenge_to_bitstring(chal)), bitstring_to_response(XOR(ID_RSU, response_to_bitstring(PUF(chal)))))));
+  in(c, (hostX:host, N_i:nonce, z1:key, E:bitstring, macD:bitstring));
+  new T_end:time;
+  event startCloudInteraction(hostX, B);
+  if MAC(XOR(nonce_to_bitstring(N_i), challenge_to_bitstring(chal)), bitstring_to_response(XOR(ID_p, response_to_bitstring(PUF(chal))))) = macD then
+    let m = sdec(E, sharedKeyGen(pkey(private_key_rsu), pdeckey(z1))) in
+    out(d, (hostX, m, ID_RSU, hashServer(readMem(B_i)), ID_p, T_start, T_end, XOR(ID_RSU, challenge_to_bitstring(chal))));
+  out(c, ID_p).
+
+
+let processC =
+  in(d, (hostX:host, m:bitstring, ID_RSU:bitstring, m_dash:bitstring, ID_p:bitstring, T_start:time, T_end:time, id:bitstring));
+  event storeResult(m,m_dash, T_start, T_end, ID_p);
+  if id = XOR(ID_RSU, challenge_to_bitstring(chal)) then
+    event endCloudInteraction(hostX,B).
+
+(* The server now has access to public key z1 and R, C*)
+let processS =
+  in(c, (hostX:host, N0:nonce, ID_p:bitstring, macD:bitstring));
+  new N1:nonce;
+  if MAC(XOR(nonce_to_bitstring(N0), challenge_to_bitstring(chal)), bitstring_to_response(XOR(ID_p, response_to_bitstring(PUF(chal)))) ) = macD then
+    ((!processServerMem(hostX, ID_p)) | (!processDeviceMem) | (!processC)) | out(c, (hostX, N1, MAC(XOR(nonce_to_bitstring(N1), challenge_to_bitstring(chal)), bitstring_to_response(XOR(ID_p, response_to_bitstring(PUF(chal))))))).
+
+
+(* --------------------------------------------------------------------------------------------- *)
+(* Main Process *)
+
+process
+	let A = fhost(chal, PUF(chal)) in out(c,A);
+	(* Instantiate an unbounded number of sessions between the host and server *)
+	(processD(A) | processS)
