@@ -1,0 +1,109 @@
+(* Script to verify security properties of Initialization Protocol for manuscript titled "A Novel Attestation and Authentication Scheme for
+in-transit Autonomous Vehicles" submitted to IEEE *)
+
+set ignoreTypes = false.
+
+type nonce.
+type host.
+free B:host.
+
+
+(* Symmetric key encryption *)
+
+type key.
+type time.
+fun senc(bitstring, key): bitstring.
+reduc forall m: bitstring, k: key; sdec(senc(m,k),k) = m.
+
+(* PUF *)
+type response.
+type challenge.
+fun PUF(challenge):response [private].
+
+free c:channel.
+
+fun fhost(challenge,response):host.
+(* Generate public key from private key *)
+fun pkey(key):key.
+
+(* Secret channel and private channel between RSU and Edge which is assumed to be secure *)
+free d:channel [private].
+
+(* Private keys *)
+free chal:challenge [private].
+free private_key_device:key [private].
+free private_key_rsu:key [private].
+
+(* Data type converters *)
+fun nonce_to_bitstring(nonce):bitstring [data,typeConverter].
+fun bitstring_to_nonce(bitstring):nonce [data,typeConverter].
+fun nonce_to_key(nonce):key [data,typeConverter].
+fun response_to_key(response):key [data,typeConverter].
+fun response_to_bitstring(response):bitstring [data,typeConverter].
+fun bitstring_to_response(bitstring):response [data,typeConverter].
+fun challenge_to_bitstring(challenge):bitstring [data,typeConverter].
+fun bitstring_to_challenge(bitstring):challenge [data,typeConverter].
+
+(* Events *)
+event startAuth(host, host).
+event endAuth(host, host).
+event startEdgeInteraction(host, host).
+event endEdgeInteraction(host, host).
+
+(* XOR function *)
+fun XOR(bitstring, bitstring): bitstring.
+reduc forall a: bitstring, b: bitstring; resolveXOR(XOR(a,b),b) = a.
+
+(* hash and MAC functions *)
+fun h(nonce,nonce):challenge.
+fun MAC(bitstring,response,key):bitstring.
+fun hash(nonce, key, time, response):bitstring.
+
+(* Security query *)
+query attacker(chal); attacker(private_key_device); attacker(private_key_rsu).
+
+query x:host, y:host; inj-event(endAuth(x,y)) ==> inj-event(startAuth(x,y)).
+query x1:host, y1:host; inj-event(endEdgeInteraction(x1,y1)) ==> inj-event(startEdgeInteraction(x1,y1)).
+
+
+(* Child processes *)
+
+let processV(A:host) =
+  in(c, hostS:host);
+  new PVID_i:bitstring;
+  new T_0:time;
+  new N_0:nonce;
+
+  event startAuth(A, hostS);
+  out (c, (hostS, N_0, PVID_i, pkey(private_key_device), T_0, hash(N_0, pkey(private_key_device), T_0, PUF(chal))));
+  in(c, (N1:nonce, PRID_j:bitstring, pkey2:key, T1:time, hash2:bitstring));
+  if hash(N1, pkey2, T1, PUF(chal)) = hash2 then
+    event endAuth(A, hostS);
+  out(c, A).
+
+let processRSU =
+  in(c, (hostX:host, N0:nonce, PVID_i:bitstring, pkey1:key, T0:time, hash1:bitstring));
+  new PRID_j:bitstring;
+  event startEdgeInteraction(hostX, B);
+  out(d, (hostX, PVID_i));
+  in(d, (hostClud:host, ch:challenge, r:response));
+  let A = fhost(ch, r) in
+
+  new N1:nonce;
+  new T1:time;
+
+  if hash(N0, pkey1, T0, r) = hash1 then
+    out(c, (N1, PRID_j, pkey(private_key_rsu), T1, hash(N1, pkey(private_key_rsu), T1, r)));
+  out(c, hostX).
+
+let processEdge =
+  in(d, (hostX:host, ID_p:bitstring));
+  out(d, (B, chal, PUF(chal)));
+  event endEdgeInteraction(hostX, B).
+
+(* --------------------------------------------------------------------------------------------- *)
+(* Main Process *)
+process
+	let A = fhost(chal, PUF(chal)) in out(c,A);
+	(* Instantiate an unbounded number of sessions between the host and server *)
+	(processV(A) | processRSU | processEdge)
